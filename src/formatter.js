@@ -14,7 +14,6 @@ const ASSIGNEE_MENTIONS = {
   'Мустафа Сейтуев': '@seytuev',
   'Amina Mamm':      '@amina_mamm',
   'bagdasarovartur05@gmail.com': '@artb93',
-  // Добавляй новых сотрудников сюда:
   // 'Имя в Asana': '@telegram_username',
 };
 
@@ -35,12 +34,45 @@ async function get(url) {
   } catch { return null; }
 }
 
-// ── Дедупликация ─────────────────────────────────────────────────────────────
-const recentEvents = new Map();
+async function getTask(gid) {
+  const url = `/tasks/${gid}?opt_fields=name,assignee.name,assignee.email,due_on,permalink_url,projects.name,completed,parent.name,parent.gid,notes,custom_fields`;
+  cache.delete(url);
+  return get(url);
+}
+
+async function getStory(gid) {
+  return get(`/stories/${gid}?opt_fields=text,resource_subtype,created_by.name`);
+}
+
+// ── Debounce по задаче ────────────────────────────────────────────────────────
+// Копит все изменения задачи за DEBOUNCE_MS миллисекунд,
+// потом отправляет одно итоговое уведомление.
+const DEBOUNCE_MS = 30000; // 30 секунд тишины = финальное состояние
+const pendingTasks = new Map(); // gid -> { timer, actions: Set, user }
+
+function scheduleTaskNotification(gid, actionType, userName, sendFn) {
+  if (pendingTasks.has(gid)) {
+    const pending = pendingTasks.get(gid);
+    clearTimeout(pending.timer);
+    pending.actions.add(actionType);
+    if (userName) pending.user = userName;
+  } else {
+    pendingTasks.set(gid, { actions: new Set([actionType]), user: userName, timer: null });
+  }
+
+  const pending = pendingTasks.get(gid);
+  pending.timer = setTimeout(async () => {
+    pendingTasks.delete(gid);
+    await sendFn(gid, pending.actions, pending.user);
+  }, DEBOUNCE_MS);
+}
+
+// ── Дедупликация уже отправленных уведомлений ─────────────────────────────────
+const sentEvents = new Map();
 function isDuplicate(key) {
-  if (recentEvents.has(key)) return true;
-  recentEvents.set(key, true);
-  setTimeout(() => recentEvents.delete(key), 10 * 1000);
+  if (sentEvents.has(key)) return true;
+  sentEvents.set(key, true);
+  setTimeout(() => sentEvents.delete(key), 30 * 1000);
   return false;
 }
 
@@ -52,16 +84,6 @@ function fmtDate(s) {
   if (!s) return LANG === 'ru' ? 'не указан' : 'not set';
   const [y, m, d] = s.split('-');
   return `${d}.${m}.${y}`;
-}
-
-async function getTask(gid) {
-  const url = `/tasks/${gid}?opt_fields=name,assignee.name,assignee.email,due_on,permalink_url,projects.name,completed,parent.name,parent.gid,notes,custom_fields`;
-  cache.delete(url);
-  return get(url);
-}
-
-async function getStory(gid) {
-  return get(`/stories/${gid}?opt_fields=text,resource_subtype,created_by.name,new_text_value,old_text_value,new_enum_value.name,old_enum_value.name,custom_field.name`);
 }
 
 function assigneeBlock(task) {
@@ -78,7 +100,82 @@ function mentionLine(task) {
   return mention ? `\n\n${mention}` : '';
 }
 
+// ── Формирует финальное сообщение об изменениях задачи ───────────────────────
+async function buildChangedMessage(gid, actions, userName) {
+  const task = await getTask(gid);
+  if (!task) return null;
+
+  const taskName = (task.name || '').trim();
+  if (taskName.length < 2) return null;
+
+  const name    = esc(taskName);
+  const project = esc(task.projects?.[0]?.name || '');
+  const due     = fmtDate(task.due_on);
+  const url     = task.permalink_url;
+  const actor   = userName ? `\n👁 ${LANG === 'ru' ? 'Кто' : 'By'}: ${esc(userName)}` : '';
+  const link    = url ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
+
+  // Завершение задачи — приоритет над всем
+  if (task.completed) {
+    let msg = `<b>✅ ${LANG === 'ru' ? 'Задача выполнена' : 'Task completed'}</b>\n📋 <b>${name}</b>`;
+    if (project) msg += `\n📁 ${project}`;
+    msg += actor + link + mentionLine(task);
+    return msg;
+  }
+
+  // Новая задача или подзадача
+  if (actions.has('added')) {
+    if (task.parent?.gid) {
+      let msg = `<b>🔸 ${LANG === 'ru' ? 'Новая подзадача создана' : 'New subtask created'}</b>\n`;
+      msg += `📋 <b>${name}</b>\n`;
+      msg += `\n↖️ ${LANG === 'ru' ? 'Задача' : 'Parent'}: ${esc(task.parent.name)}`;
+      if (project) msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
+      msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeBlock(task)}`;
+      msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
+      msg += actor + link + mentionLine(task);
+      return msg;
+    }
+
+    let msg = `<b>➕ ${LANG === 'ru' ? 'Новая задача создана' : 'New task created'}</b>\n`;
+    msg += `📋 <b>${name}</b>\n`;
+    if (project) msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
+    msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeBlock(task)}`;
+    msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
+    msg += actor + link + mentionLine(task);
+    return msg;
+  }
+
+  // Одно или несколько изменений — показываем итоговое состояние задачи
+  const changedFields = [];
+  if (actions.has('assignee'))     changedFields.push(LANG === 'ru' ? '👤 исполнитель'  : '👤 assignee');
+  if (actions.has('due_on'))       changedFields.push(LANG === 'ru' ? '📅 срок'         : '📅 due date');
+  if (actions.has('notes'))        changedFields.push(LANG === 'ru' ? '📝 описание'     : '📝 description');
+  if (actions.has('name'))         changedFields.push(LANG === 'ru' ? '✏️ название'     : '✏️ name');
+  if (actions.has('custom_field')) changedFields.push(LANG === 'ru' ? '🔄 поле'         : '🔄 field');
+
+  if (changedFields.length === 0) return null;
+
+  let msg = `<b>✏️ ${LANG === 'ru' ? 'Задача изменена' : 'Task updated'}</b>\n`;
+  msg += `📋 <b>${name}</b>\n`;
+  msg += `\n${LANG === 'ru' ? 'Что изменено' : 'Changed'}: ${changedFields.join(', ')}`;
+  if (project)  msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
+  msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeBlock(task)}`;
+  msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
+
+  // Показываем описание если оно было изменено
+  if (actions.has('notes') && task.notes) {
+    const notes = task.notes.slice(0, 300).trim();
+    msg += `\n\n📝 <i>${esc(notes)}${task.notes.length > 300 ? '...' : ''}</i>`;
+  }
+
+  msg += actor + link + mentionLine(task);
+  return msg;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
+// Внешний колбэк для отправки — устанавливается из index.js
+let _sendTelegram = null;
+function setSendFunction(fn) { _sendTelegram = fn; }
 
 async function formatEvent(event) {
   const { action, resource, user, parent, change } = event;
@@ -87,144 +184,47 @@ async function formatEvent(event) {
 
   // ── ЗАДАЧА ──────────────────────────────────────────────────────────────────
   if (type === 'task') {
-    const dedupKey = `task:${gid}:${action}:${change?.field || ''}`;
-    if (isDuplicate(dedupKey)) return null;
-
-    // Задержка 3 сек чтобы Asana успела сохранить полное название
-    await new Promise(r => setTimeout(r, 3000));
-
-    const task = await getTask(gid);
-    if (!task) return null;
-
-    const taskName = (task.name || '').trim();
-    if (taskName.length < 2) return null;
-
-    const name    = esc(taskName);
-    const project = esc(task.projects?.[0]?.name || '');
-    const due     = fmtDate(task.due_on);
-    const url     = task.permalink_url;
-    const actor   = user?.name ? `\n👁 ${LANG === 'ru' ? 'Кто' : 'By'}: ${esc(user.name)}` : '';
-    const link    = url && action !== 'deleted' ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
-
-    // ── Новая задача ──
-    if (action === 'added') {
-      // Подзадача
-      if (task.parent?.gid) {
-        let msg = `<b>🔸 ${LANG === 'ru' ? 'Новая подзадача создана' : 'New subtask created'}</b>\n`;
-        msg += `📋 <b>${name}</b>\n`;
-        msg += `\n↖️ ${LANG === 'ru' ? 'Задача' : 'Parent'}: ${esc(task.parent.name)}`;
-        if (project) msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
-        msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeBlock(task)}`;
-        msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
-        msg += actor + link + mentionLine(task);
-        return msg;
-      }
-
-      // Обычная задача
-      let msg = `<b>➕ ${LANG === 'ru' ? 'Новая задача создана' : 'New task created'}</b>\n`;
-      msg += `📋 <b>${name}</b>\n`;
-      if (project) msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
-      msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeBlock(task)}`;
-      msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
-      msg += actor + link + mentionLine(task);
-      return msg;
-    }
-
-    // ── Удалена ──
+    // Удаление — сразу без debounce
     if (action === 'deleted') {
+      if (isDuplicate(`deleted:${gid}`)) return null;
+      const task = await getTask(gid);
+      const name = esc((task?.name || '').trim());
+      if (!name) return null;
+      const actor = user?.name ? `\n👁 ${esc(user.name)}` : '';
       return `<b>🗑 ${LANG === 'ru' ? 'Задача удалена' : 'Task deleted'}</b>\n📋 <b>${name}</b>${actor}`;
     }
 
-    // ── Изменена ──
-    if (action === 'changed') {
-      const field = change?.field;
-
-      // Завершена
-      if (task.completed) {
-        let msg = `<b>✅ ${LANG === 'ru' ? 'Задача выполнена' : 'Task completed'}</b>\n📋 <b>${name}</b>`;
-        if (project) msg += `\n📁 ${project}`;
-        msg += actor + link + mentionLine(task);
-        return msg;
-      }
-
-      // Изменён исполнитель
-      if (field === 'assignee') {
-        const newAssignee = assigneeBlock(task);
-        let msg = `<b>👤 ${LANG === 'ru' ? 'Изменён исполнитель' : 'Assignee changed'}</b>\n`;
-        msg += `📋 <b>${name}</b>\n`;
-        msg += `\n👤 ${LANG === 'ru' ? 'Новый исполнитель' : 'New assignee'}: ${newAssignee}`;
-        msg += actor + link + mentionLine(task);
-        return msg;
-      }
-
-      // Изменён срок
-      if (field === 'due_on') {
-        let msg = `<b>📅 ${LANG === 'ru' ? 'Изменён срок' : 'Due date changed'}</b>\n`;
-        msg += `📋 <b>${name}</b>\n`;
-        msg += `\n📅 ${LANG === 'ru' ? 'Новый срок' : 'New due date'}: ${due}`;
-        msg += actor + link;
-        return msg;
-      }
-
-      // Изменено описание
-      if (field === 'notes') {
-        const notes = (task.notes || '').slice(0, 200).trim();
-        let msg = `<b>📝 ${LANG === 'ru' ? 'Изменено описание' : 'Description updated'}</b>\n`;
-        msg += `📋 <b>${name}</b>`;
-        if (notes) msg += `\n\n<i>${esc(notes)}${task.notes?.length > 200 ? '...' : ''}</i>`;
-        msg += actor + link;
-        return msg;
-      }
-
-      // Изменено название
-      if (field === 'name') {
-        const oldName = esc(change?.old_value || '');
-        let msg = `<b>✏️ ${LANG === 'ru' ? 'Переименована задача' : 'Task renamed'}</b>\n`;
-        if (oldName) msg += `<s>${oldName}</s> →\n`;
-        msg += `📋 <b>${name}</b>`;
-        msg += actor + link;
-        return msg;
-      }
-
-      // Кастомные поля (статус, приоритет и др.)
-      if (field === 'custom_fields' || field?.startsWith('custom_field')) {
-        const fieldName = change?.field_name || (LANG === 'ru' ? 'Поле' : 'Field');
-        const oldVal = change?.old_display_value || change?.old_value || '';
-        const newVal = change?.new_display_value || change?.new_value || '';
-        let msg = `<b>🔄 ${LANG === 'ru' ? 'Изменено поле' : 'Field updated'}: ${esc(fieldName)}</b>\n`;
-        msg += `📋 <b>${name}</b>\n`;
-        if (oldVal) msg += `\n${esc(String(oldVal))} → <b>${esc(String(newVal))}</b>`;
-        else        msg += `\n<b>${esc(String(newVal))}</b>`;
-        msg += actor + link;
-        return msg;
-      }
-
-      // Любое другое изменение
-      if (field) {
-        const fieldLabels = {
-          completed:   LANG === 'ru' ? 'Статус'      : 'Status',
-          liked:       null, // игнорируем лайки
-          memberships: null, // игнорируем перемещение между секциями
-          tags:        LANG === 'ru' ? 'Теги'        : 'Tags',
-          followers:   null, // игнорируем подписчиков
-        };
-        const label = fieldLabels[field];
-        if (label === null) return null; // явно игнорируемые поля
-        if (label) {
-          let msg = `<b>🔄 ${LANG === 'ru' ? 'Изменено' : 'Updated'}: ${label}</b>\n📋 <b>${name}</b>`;
-          msg += actor + link;
-          return msg;
-        }
-      }
-
-      return null;
+    // Определяем тип изменения
+    let actionType = action; // 'added' или название поля
+    if (action === 'changed' && change?.field) {
+      actionType = change.field; // 'assignee', 'due_on', 'notes', 'name', 'custom_fields'...
     }
+
+    // Игнорируем несущественные поля
+    const ignoredFields = ['liked', 'followers', 'memberships'];
+    if (ignoredFields.includes(actionType)) return null;
+
+    // Нормализуем название поля
+    if (actionType === 'due_on') actionType = 'due_on';
+    if (actionType === 'custom_fields' || actionType?.startsWith('custom_field')) actionType = 'custom_field';
+
+    // Накапливаем через debounce, отправляем одно итоговое сообщение
+    scheduleTaskNotification(gid, actionType, user?.name, async (taskGid, actions, userName) => {
+      const dedupKey = `task:${taskGid}:${[...actions].sort().join(',')}`;
+      if (isDuplicate(dedupKey)) return;
+
+      const msg = await buildChangedMessage(taskGid, actions, userName);
+      if (msg && _sendTelegram) {
+        await _sendTelegram(msg).catch(e => console.error('[ERR] Telegram:', e.message));
+      }
+    });
+
+    return null; // отправка идёт через debounce, не через return
   }
 
   // ── КОММЕНТАРИЙ ─────────────────────────────────────────────────────────────
   if (type === 'story' && action === 'added') {
-    const dedupKey = `story:${gid}`;
-    if (isDuplicate(dedupKey)) return null;
+    if (isDuplicate(`story:${gid}`)) return null;
 
     const story = await getStory(gid);
     if (!story || story.resource_subtype !== 'comment_added') return null;
@@ -244,16 +244,14 @@ async function formatEvent(event) {
 
   // ── СЕКЦИЯ ──────────────────────────────────────────────────────────────────
   if (type === 'section' && action === 'added') {
-    const dedupKey = `section:${gid}`;
-    if (isDuplicate(dedupKey)) return null;
+    if (isDuplicate(`section:${gid}`)) return null;
     const name = esc(resource?.name || '');
     return `<b>📂 ${LANG === 'ru' ? 'Новая секция создана' : 'New section created'}</b>\n${name}`;
   }
 
   // ── ВЛОЖЕНИЕ ─────────────────────────────────────────────────────────────────
   if (type === 'attachment' && action === 'added') {
-    const dedupKey = `attachment:${gid}`;
-    if (isDuplicate(dedupKey)) return null;
+    if (isDuplicate(`attachment:${gid}`)) return null;
     const task = parent?.gid ? await getTask(parent.gid) : null;
     const file = esc(resource?.name || (LANG === 'ru' ? 'файл' : 'file'));
     let msg = `<b>📎 ${LANG === 'ru' ? 'Файл прикреплён' : 'File attached'}</b>\n${file}`;
@@ -265,4 +263,4 @@ async function formatEvent(event) {
   return null;
 }
 
-module.exports = { formatEvent };
+module.exports = { formatEvent, setSendFunction };
