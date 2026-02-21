@@ -2,7 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const { sendTelegram } = require('./telegram');
-const { formatEvent } = require('./formatter');
+const { formatEvent, setSendFunction } = require('./formatter');
+
+// Передаём функцию отправки в formatter (нужна для debounce)
+setSendFunction(sendTelegram);
 
 const app = express();
 
@@ -13,7 +16,6 @@ app.use(express.json({
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.ASANA_WEBHOOK_SECRET || '';
 
-// ── Проверка подписи ──────────────────────────────────────────────────────────
 function checkSignature(req) {
   if (!SECRET) return true;
   const sig = req.headers['x-hook-signature'];
@@ -22,21 +24,17 @@ function checkSignature(req) {
   return hmac === sig;
 }
 
-// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Asana→Telegram Bot', uptime: Math.floor(process.uptime()) + 's' });
 });
 
-// ── Webhook ───────────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  // Asana handshake при создании вебхука
   const handshake = req.headers['x-hook-secret'];
   if (handshake) {
     console.log('[HANDSHAKE] Asana webhook подтверждён');
     return res.set('x-hook-secret', handshake).status(200).send();
   }
 
-  // Проверка подписи
   if (!checkSignature(req)) {
     console.warn('[WARN] Неверная подпись запроса');
     return res.status(401).send('Unauthorized');
@@ -45,7 +43,6 @@ app.post('/webhook', async (req, res) => {
   const events = req.body?.events || [];
   console.log(`[INFO] Получено событий: ${events.length}`);
 
-  // Отвечаем Asana немедленно, обрабатываем в фоне
   res.status(200).send();
 
   for (const event of events) {
