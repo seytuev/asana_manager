@@ -132,8 +132,10 @@ async function formatEvent(event) {
 
   // ── ЗАДАЧА: создание ──────────────────────────────────────────────────────────
   if (type === 'task' && action === 'added') {
+    // Игнорируем если задача уже существует (есть в кэше имён)
+    if (taskNameCache.has(gid)) return null;
+
     // Игнорируем события "задача добавлена в секцию/проект" для существующих задач
-    // Новая задача определяется по parent=project (первое событие при создании)
     if (parent?.resource_type !== 'project' && parent?.resource_type !== 'task') return null;
 
     scheduleNewTask(gid, user?.name, async (taskGid, userName) => {
@@ -261,16 +263,23 @@ async function formatEvent(event) {
 
     // ── Изменён исполнитель ──
     if (subtype === 'assigned' || subtype === 'unassigned') {
-      if (!taskName) return null;
-      // Пропускаем автоназначения от Asana (системные, без реального пользователя)
+      // Пропускаем автоназначения от Asana
       const storyText = story.text || '';
       const isAutoAssign = storyText.toLowerCase().startsWith('asana ');
       if (isAutoAssign) return null;
-      const newAssignee = assigneeBlock(task);
+      if (!taskName) return null;
+      // Извлекаем нового исполнителя из текста story ("X assigned to Y")
+      const assignedMatch = storyText.match(/assigned to (.+)$/i);
+      const newAssigneeName = assignedMatch ? assignedMatch[1].trim() : null;
+      const mention = newAssigneeName ? getMention(newAssigneeName) : null;
+      const newAssigneeStr = newAssigneeName
+        ? (mention ? `${esc(newAssigneeName)} (${mention})` : esc(newAssigneeName))
+        : assigneeBlock(task);
       let msg = `<b>👤 ${LANG === 'ru' ? 'Изменён исполнитель' : 'Assignee changed'}</b>\n`;
       msg += `📋 <b>${taskName}</b>\n`;
-      msg += `\n👤 ${LANG === 'ru' ? 'Новый исполнитель' : 'New assignee'}: ${newAssignee}`;
-      msg += actor + link + mentionLine(task);
+      msg += `\n👤 ${LANG === 'ru' ? 'Новый исполнитель' : 'New assignee'}: ${newAssigneeStr}`;
+      msg += actor + link;
+      if (mention) msg += `\n\n${mention}`;
       return msg;
     }
 
