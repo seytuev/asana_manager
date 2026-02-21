@@ -55,6 +55,8 @@ app.post('/webhook', async (req, res) => {
           headers: { Authorization: `Bearer ${process.env.ASANA_ACCESS_TOKEN}` }
         });
         const s = r.data?.data;
+        // Прикрепляем данные story к событию чтобы formatter мог использовать их
+        event._storyData = s;
         console.log(`  └─ story subtype=${s?.resource_subtype} | type=${s?.type} | text="${(s?.text||'').slice(0,80)}"`);
       } catch(e) {
         console.log(`  └─ story fetch error: ${e.message}`);

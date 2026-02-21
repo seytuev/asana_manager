@@ -49,7 +49,14 @@ async function getTask(gid) {
 async function getStory(gid) {
   const url = `/stories/${gid}?opt_fields=text,type,resource_subtype,created_by.name,new_text_value,old_text_value,new_enum_value.name,old_enum_value.name,new_name,old_name,assignee.name,custom_field.name`;
   cache.delete(url);
-  return cachedGet(url);
+  try {
+    const r = await api.get(url);
+    return r.data?.data || null;
+  } catch(e) {
+    // Story недоступна — возвращаем минимальный объект с данными из события если есть
+    console.log(`  [WARN] story ${gid} not accessible: ${e.response?.status}`);
+    return null;
+  }
 }
 
 // ── Дедупликация ─────────────────────────────────────────────────────────────
@@ -119,7 +126,7 @@ function setSendFunction(fn) { _sendTelegram = fn; }
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function formatEvent(event) {
-  const { action, resource, user, parent } = event;
+  const { action, resource, user, parent, _storyData } = event;
   const type = resource?.resource_type;
   const gid  = resource?.gid;
 
@@ -168,7 +175,15 @@ async function formatEvent(event) {
     if (isDuplicate(`deleted:${gid}`)) return null;
     // Задача уже удалена — берём имя из кэша
     const cachedName = taskNameCache.get(gid);
-    const name = esc(cachedName || `#${gid}`);
+    // Если имени нет в кэше — задача была пустой (случайное нажатие), игнорируем
+    if (!cachedName || cachedName.trim().length < 2) return null;
+    // Если задача ещё в pending (не успела сохраниться) — тоже игнорируем
+    if (pendingNewTasks.has(gid)) {
+      pendingNewTasks.get(gid) && clearTimeout(pendingNewTasks.get(gid).timer);
+      pendingNewTasks.delete(gid);
+      return null;
+    }
+    const name = esc(cachedName);
     const actor = user?.name ? `\n👁 ${esc(user.name)}` : '';
     return `<b>🗑 ${LANG === 'ru' ? 'Задача удалена' : 'Task deleted'}</b>\n📋 <b>${name}</b>${actor}`;
   }
@@ -180,7 +195,8 @@ async function formatEvent(event) {
   if (type === 'story' && action === 'added') {
     if (isDuplicate(`story:${gid}`)) return null;
 
-    const story = await getStory(gid);
+    // Используем предзагруженные данные из index.js или запрашиваем напрямую
+    const story = _storyData || await getStory(gid);
     if (!story) return null;
 
     const subtype = story.resource_subtype;
