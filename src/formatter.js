@@ -190,10 +190,13 @@ async function formatEvent(event) {
     if (taskGid && pendingNewTasks.has(taskGid)) return null;
 
     const task     = taskGid ? await getTask(taskGid) : null;
-    const taskName = task ? esc((task.name || '').trim()) : null;
+    // Если задача недоступна через API — берём имя из кэша
+    const rawName  = task?.name || (taskGid ? taskNameCache.get(taskGid) : null) || '';
+    const taskName = rawName.trim() ? esc(rawName.trim()) : null;
     const url      = task?.permalink_url;
     const link     = url ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
     const actor    = story.created_by?.name ? `\n👁 ${esc(story.created_by.name)}` : '';
+    console.log(`  [FMT] subtype=${subtype} taskName="${rawName}" task=${!!task}`);
 
     // ── Комментарий ──
     if (subtype === 'comment_added') {
@@ -240,9 +243,10 @@ async function formatEvent(event) {
     // ── Изменён исполнитель ──
     if (subtype === 'assigned' || subtype === 'unassigned') {
       if (!taskName) return null;
-      // Пропускаем автоназначения Asana (системные)
-      const creatorName = story.created_by?.name || '';
-      if (creatorName.toLowerCase() === 'asana') return null;
+      // Пропускаем автоназначения от Asana (системные, без реального пользователя)
+      const storyText = story.text || '';
+      const isAutoAssign = storyText.toLowerCase().startsWith('asana ');
+      if (isAutoAssign) return null;
       const newAssignee = assigneeBlock(task);
       let msg = `<b>👤 ${LANG === 'ru' ? 'Изменён исполнитель' : 'Assignee changed'}</b>\n`;
       msg += `📋 <b>${taskName}</b>\n`;
