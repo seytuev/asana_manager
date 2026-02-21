@@ -138,6 +138,18 @@ async function formatEvent(event) {
     // Игнорируем события "задача добавлена в секцию/проект" для существующих задач
     if (parent?.resource_type !== 'project' && parent?.resource_type !== 'task') return null;
 
+    // Проверяем через API — если задача уже старая (created_at давно), это не новая задача
+    // Новая задача создана менее 30 секунд назад
+    try {
+      const r = await api.get(`/tasks/${gid}?opt_fields=name,created_at`);
+      const t = r.data?.data;
+      if (t?.name) taskNameCache.set(gid, t.name);
+      if (t?.created_at) {
+        const ageMs = Date.now() - new Date(t.created_at).getTime();
+        if (ageMs > 30000) return null; // старше 30 сек — не новая задача
+      }
+    } catch { return null; }
+
     scheduleNewTask(gid, user?.name, async (taskGid, userName) => {
       if (isDuplicate(`new_task:${taskGid}`)) return;
 
