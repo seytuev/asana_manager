@@ -9,7 +9,7 @@ const api = axios.create({
   timeout: 8000,
 });
 
-// Кэш на 5 минут
+// Кэш данных на 5 минут
 const cache = new Map();
 async function get(url) {
   if (cache.has(url)) return cache.get(url);
@@ -20,6 +20,15 @@ async function get(url) {
     setTimeout(() => cache.delete(url), 5 * 60 * 1000);
     return d;
   } catch { return null; }
+}
+
+// Дедупликация — не отправлять одно и то же дважды за 10 секунд
+const recentEvents = new Map();
+function isDuplicate(key) {
+  if (recentEvents.has(key)) return true;
+  recentEvents.set(key, true);
+  setTimeout(() => recentEvents.delete(key), 10 * 1000);
+  return false;
 }
 
 function esc(s) {
@@ -49,8 +58,14 @@ async function formatEvent(event) {
 
   // ── ЗАДАЧА ──────────────────────────────────────────────────────────────────
   if (type === 'task') {
+    const dedupKey = `task:${gid}:${action}`;
+    if (isDuplicate(dedupKey)) return null;
+
     const task = await getTask(gid);
     if (!task) return null;
+
+    // Пропускаем changed если задача не завершена — слишком шумно
+    if (action === 'changed' && !task.completed) return null;
 
     const name     = esc(task.name);
     const project  = esc(task.projects?.[0]?.name || '');
@@ -76,6 +91,8 @@ async function formatEvent(event) {
 
   // ── КОММЕНТАРИЙ ─────────────────────────────────────────────────────────────
   if (type === 'story' && action === 'added') {
+    const dedupKey = `story:${gid}`;
+    if (isDuplicate(dedupKey)) return null;
     const story = await getStory(gid);
     if (!story || story.resource_subtype !== 'comment_added') return null;
 
@@ -94,12 +111,16 @@ async function formatEvent(event) {
 
   // ── СЕКЦИЯ ──────────────────────────────────────────────────────────────────
   if (type === 'section' && action === 'added') {
+    const dedupKey = `section:${gid}`;
+    if (isDuplicate(dedupKey)) return null;
     const name = esc(resource?.name || '');
     return `<b>📂 ${LANG === 'ru' ? 'Новая секция создана' : 'New section created'}</b>\n${name}`;
   }
 
   // ── ВЛОЖЕНИЕ ─────────────────────────────────────────────────────────────────
   if (type === 'attachment' && action === 'added') {
+    const dedupKey = `attachment:${gid}`;
+    if (isDuplicate(dedupKey)) return null;
     const task = parent?.gid ? await getTask(parent.gid) : null;
     const file = esc(resource?.name || LANG === 'ru' ? 'файл' : 'file');
     let msg = `<b>📎 ${LANG === 'ru' ? 'Файл прикреплён' : 'File attached'}</b>\n${file}`;
