@@ -40,7 +40,12 @@ app.post('/webhook', async (req, res) => {
   }
 
   const events = req.body?.events || [];
-  console.log(`[INFO] Получено событий: ${events.length}`);
+  console.log(`\n[INFO] ===== Получено событий: ${events.length} =====`);
+
+  // Логируем каждое событие полностью
+  events.forEach((e, i) => {
+    console.log(`[EVENT ${i+1}] action=${e.action} type=${e.resource?.resource_type} gid=${e.resource?.gid} parent_type=${e.parent?.resource_type} parent_gid=${e.parent?.gid} change_field=${e.change?.field} user=${e.user?.name}`);
+  });
 
   res.status(200).send();
 
@@ -49,7 +54,7 @@ app.post('/webhook', async (req, res) => {
       const text = await formatEvent(event);
       if (text) {
         await sendTelegram(text);
-        console.log(`[OK] Отправлено: [${event.action}] ${event.resource?.resource_type} / ${event.resource?.gid}`);
+        console.log(`[OK] Отправлено: [${event.action}] ${event.resource?.resource_type}`);
       }
     } catch (err) {
       console.error(`[ERR] Ошибка: ${err.message}`);
