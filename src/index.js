@@ -4,7 +4,6 @@ const crypto = require('crypto');
 const { sendTelegram } = require('./telegram');
 const { formatEvent, setSendFunction } = require('./formatter');
 
-// Передаём функцию отправки в formatter (нужна для debounce)
 setSendFunction(sendTelegram);
 
 const app = express();
@@ -50,23 +49,15 @@ app.post('/webhook', async (req, res) => {
       const text = await formatEvent(event);
       if (text) {
         await sendTelegram(text);
-        console.log(`[OK] Отправлено: [${event.action}] ${event.resource?.resource_type}`);
+        console.log(`[OK] Отправлено: [${event.action}] ${event.resource?.resource_type} / ${event.resource?.gid}`);
       }
     } catch (err) {
-      console.error(`[ERR] Ошибка обработки события: ${err.message}`);
+      console.error(`[ERR] Ошибка: ${err.message}`);
     }
   }
 });
 
 app.listen(PORT, () => {
   console.log(`\n🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`📡 Webhook URL: ${process.env.PUBLIC_URL || 'http://localhost:' + PORT}/webhook\n`);
-
-  const vars = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'ASANA_ACCESS_TOKEN', 'ASANA_PROJECT_GID', 'ASANA_WEBHOOK_SECRET', 'PUBLIC_URL'];
-  const missing = vars.filter(v => !process.env[v] || process.env[v].startsWith('your_'));
-  if (missing.length) {
-    console.warn('⚠️  Не заполнены переменные окружения:', missing.join(', '));
-  } else {
-    console.log('✅ Все переменные окружения заданы');
-  }
+  console.log(`📡 Webhook: ${process.env.PUBLIC_URL || 'http://localhost:' + PORT}/webhook\n`);
 });

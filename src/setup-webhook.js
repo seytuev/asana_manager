@@ -1,12 +1,7 @@
-/**
- * Запуск: node src/setup-webhook.js
- * После деплоя на Railway — запусти один раз из Railway Shell или локально с заполненным .env
- */
 require('dotenv').config();
 const axios = require('axios');
 
 const TOKEN      = process.env.ASANA_ACCESS_TOKEN;
-const SECRET     = process.env.ASANA_WEBHOOK_SECRET;
 const GIDS       = (process.env.ASANA_PROJECT_GID || '').split(',').map(s => s.trim()).filter(Boolean);
 const PUBLIC_URL = process.env.PUBLIC_URL;
 
@@ -21,9 +16,21 @@ const api = axios.create({
 });
 
 async function run() {
+  // Сначала удаляем все старые webhook'и для этого проекта
+  console.log('\n🔍 Проверяю существующие webhook\'и...');
+  try {
+    const { data } = await api.get(`/webhooks?workspace=${GIDS[0]}`);
+    const existing = (data.data || []).filter(w => w.target?.includes(PUBLIC_URL));
+    for (const wh of existing) {
+      await api.delete(`/webhooks/${wh.gid}`);
+      console.log(`🗑 Удалён старый webhook: ${wh.gid}`);
+    }
+  } catch (e) {
+    console.warn('⚠️ Не удалось получить список webhook\'ов:', e.message);
+  }
+
   for (const gid of GIDS) {
     console.log(`\n📁 Регистрирую webhook для проекта ${gid}...`);
-    console.log(`   Target: ${PUBLIC_URL}/webhook`);
     try {
       const { data } = await api.post('/webhooks', {
         data: {
@@ -31,9 +38,8 @@ async function run() {
           target: `${PUBLIC_URL}/webhook`,
           filters: [
             { resource_type: 'task',       action: 'added'   },
-            { resource_type: 'task',       action: 'changed' },
             { resource_type: 'task',       action: 'deleted' },
-            { resource_type: 'story',      action: 'added'   },
+            { resource_type: 'story',      action: 'added'   }, // все изменения полей
             { resource_type: 'section',    action: 'added'   },
             { resource_type: 'attachment', action: 'added'   },
           ],
@@ -43,9 +49,6 @@ async function run() {
     } catch (err) {
       const msg = err.response?.data?.errors?.[0]?.message || err.message;
       console.error(`❌ Ошибка: ${msg}`);
-      if (err.response?.status === 400) {
-        console.error('   → Возможно, webhook с таким URL уже существует');
-      }
     }
   }
 }
