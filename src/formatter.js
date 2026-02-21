@@ -77,8 +77,8 @@ async function formatEvent(event) {
     const dedupKey = `task:${gid}:${action}`;
     if (isDuplicate(dedupKey)) return null;
 
-    // Задержка 1.5 сек чтобы Asana успела сохранить полное название
-    await new Promise(r => setTimeout(r, 1500));
+    // Задержка 3 сек чтобы Asana успела сохранить полное название
+    await new Promise(r => setTimeout(r, 3000));
 
     const task = await getTask(gid);
     if (!task) return null;
