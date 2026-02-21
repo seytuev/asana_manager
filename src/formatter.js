@@ -9,7 +9,20 @@ const api = axios.create({
   timeout: 8000,
 });
 
-// Кэш данных на 5 минут
+// ── Маппинг исполнителей Asana → Telegram username ───────────────────────────
+const ASSIGNEE_MENTIONS = {
+  'Мустафа Сейтуев': '@seytuev',
+  'Amina Mamm':      '@amina_mamm',
+  'bagdasarovartur05@gmail.com': '@artb93',
+  // Добавляй новых сотрудников сюда в формате:
+  // 'Имя в Asana': '@telegram_username',
+};
+
+function getMention(assigneeName) {
+  return ASSIGNEE_MENTIONS[assigneeName] || null;
+}
+
+// ── Кэш данных на 5 минут ────────────────────────────────────────────────────
 const cache = new Map();
 async function get(url) {
   if (cache.has(url)) return cache.get(url);
@@ -22,7 +35,7 @@ async function get(url) {
   } catch { return null; }
 }
 
-// Дедупликация — не отправлять одно и то же дважды за 10 секунд
+// ── Дедупликация — не отправлять одно и то же дважды за 10 секунд ────────────
 const recentEvents = new Map();
 function isDuplicate(key) {
   if (recentEvents.has(key)) return true;
@@ -42,7 +55,10 @@ function fmtDate(s) {
 }
 
 async function getTask(gid) {
-  return get(`/tasks/${gid}?opt_fields=name,assignee.name,due_on,permalink_url,projects.name,completed`);
+  // Не кэшируем задачи чтобы всегда получать актуальное название
+  const url = `/tasks/${gid}?opt_fields=name,assignee.name,assignee.email,due_on,permalink_url,projects.name,completed`;
+  cache.delete(url);
+  return get(url);
 }
 
 async function getStory(gid) {
@@ -61,31 +77,49 @@ async function formatEvent(event) {
     const dedupKey = `task:${gid}:${action}`;
     if (isDuplicate(dedupKey)) return null;
 
+    // Задержка 1.5 сек чтобы Asana успела сохранить полное название
+    await new Promise(r => setTimeout(r, 1500));
+
     const task = await getTask(gid);
     if (!task) return null;
+
+    // Пропускаем задачи с пустым названием (нажатие Enter в Asana)
+    const taskName = (task.name || '').trim();
+    if (taskName.length < 2) return null;
 
     // Пропускаем changed если задача не завершена — слишком шумно
     if (action === 'changed' && !task.completed) return null;
 
-    const name     = esc(task.name);
-    const project  = esc(task.projects?.[0]?.name || '');
-    const assignee = esc(task.assignee?.name || (LANG === 'ru' ? 'не назначен' : 'unassigned'));
-    const due      = fmtDate(task.due_on);
-    const url      = task.permalink_url;
-    const actor    = user?.name ? `\n👁 ${LANG === 'ru' ? 'Изменил' : 'By'}: ${esc(user.name)}` : '';
-    const link     = url && action !== 'deleted' ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
+    const name    = esc(taskName);
+    const project = esc(task.projects?.[0]?.name || '');
+    const due     = fmtDate(task.due_on);
+    const url     = task.permalink_url;
+
+    // Исполнитель с упоминанием Telegram
+    const assigneeName = task.assignee?.name || task.assignee?.email || null;
+    const mention      = assigneeName ? getMention(assigneeName) : null;
+    const assigneeStr  = mention
+      ? `${esc(assigneeName)} (${mention})`
+      : esc(assigneeName || (LANG === 'ru' ? 'не назначен' : 'unassigned'));
+
+    const actor = user?.name ? `\n👁 ${LANG === 'ru' ? 'Изменил' : 'By'}: ${esc(user.name)}` : '';
+    const link  = url && action !== 'deleted' ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
 
     let header;
-    if (action === 'added')   header = LANG === 'ru' ? '➕ Новая задача создана'  : '➕ New task created';
-    else if (action === 'deleted') header = LANG === 'ru' ? '🗑 Задача удалена'   : '🗑 Task deleted';
-    else if (task.completed)  header = LANG === 'ru' ? '✅ Задача выполнена'      : '✅ Task completed';
-    else                      header = LANG === 'ru' ? '✏️ Задача изменена'       : '✏️ Task updated';
+    if (action === 'added')        header = LANG === 'ru' ? '➕ Новая задача создана' : '➕ New task created';
+    else if (action === 'deleted') header = LANG === 'ru' ? '🗑 Задача удалена'       : '🗑 Task deleted';
+    else if (task.completed)       header = LANG === 'ru' ? '✅ Задача выполнена'     : '✅ Task completed';
+    else return null;
 
     let msg = `<b>${header}</b>\n📋 <b>${name}</b>\n`;
-    if (project)  msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
-    msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assignee}`;
+    if (project) msg += `\n📁 ${LANG === 'ru' ? 'Проект' : 'Project'}: ${project}`;
+    msg += `\n👤 ${LANG === 'ru' ? 'Исполнитель' : 'Assignee'}: ${assigneeStr}`;
     msg += `\n📅 ${LANG === 'ru' ? 'Срок' : 'Due'}: ${due}`;
     msg += actor + link;
+
+    // Упоминание отдельной строкой чтобы точно сработало в Telegram
+    if (mention) msg += `\n\n${mention}`;
+
     return msg;
   }
 
@@ -93,6 +127,7 @@ async function formatEvent(event) {
   if (type === 'story' && action === 'added') {
     const dedupKey = `story:${gid}`;
     if (isDuplicate(dedupKey)) return null;
+
     const story = await getStory(gid);
     if (!story || story.resource_subtype !== 'comment_added') return null;
 
@@ -122,7 +157,7 @@ async function formatEvent(event) {
     const dedupKey = `attachment:${gid}`;
     if (isDuplicate(dedupKey)) return null;
     const task = parent?.gid ? await getTask(parent.gid) : null;
-    const file = esc(resource?.name || LANG === 'ru' ? 'файл' : 'file');
+    const file = esc(resource?.name || (LANG === 'ru' ? 'файл' : 'file'));
     let msg = `<b>📎 ${LANG === 'ru' ? 'Файл прикреплён' : 'File attached'}</b>\n${file}`;
     if (task?.name) msg += `\n📋 ${esc(task.name)}`;
     if (task?.permalink_url) msg += `\n<a href="${task.permalink_url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>`;
