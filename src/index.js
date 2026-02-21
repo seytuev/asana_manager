@@ -30,39 +30,51 @@ app.get('/', (req, res) => {
 app.post('/webhook', async (req, res) => {
   const handshake = req.headers['x-hook-secret'];
   if (handshake) {
-    console.log('[HANDSHAKE] Asana webhook подтверждён');
+    console.log('[HANDSHAKE] подтверждён');
     return res.set('x-hook-secret', handshake).status(200).send();
   }
 
   if (!checkSignature(req)) {
-    console.warn('[WARN] Неверная подпись запроса');
+    console.warn('[WARN] Неверная подпись');
     return res.status(401).send('Unauthorized');
   }
 
   const events = req.body?.events || [];
-  console.log(`\n[INFO] ===== Получено событий: ${events.length} =====`);
-
-  // Логируем каждое событие полностью
-  events.forEach((e, i) => {
-    console.log(`[EVENT ${i+1}] action=${e.action} type=${e.resource?.resource_type} gid=${e.resource?.gid} parent_type=${e.parent?.resource_type} parent_gid=${e.parent?.gid} change_field=${e.change?.field} user=${e.user?.name}`);
-  });
 
   res.status(200).send();
 
   for (const event of events) {
+    // Детальный лог каждого события
+    console.log(`[EVT] action=${event.action} | type=${event.resource?.resource_type} | gid=${event.resource?.gid} | parent=${event.parent?.resource_type}:${event.parent?.gid} | field=${event.change?.field} | user=${event.user?.name || '-'}`);
+
+    // Для story — логируем subtype через API
+    if (event.resource?.resource_type === 'story') {
+      const axios = require('axios');
+      try {
+        const r = await axios.get(`https://app.asana.com/api/1.0/stories/${event.resource.gid}?opt_fields=resource_subtype,text,type`, {
+          headers: { Authorization: `Bearer ${process.env.ASANA_ACCESS_TOKEN}` }
+        });
+        const s = r.data?.data;
+        console.log(`  └─ story subtype=${s?.resource_subtype} | type=${s?.type} | text="${(s?.text||'').slice(0,80)}"`);
+      } catch(e) {
+        console.log(`  └─ story fetch error: ${e.message}`);
+      }
+    }
+
     try {
       const text = await formatEvent(event);
       if (text) {
         await sendTelegram(text);
-        console.log(`[OK] Отправлено: [${event.action}] ${event.resource?.resource_type}`);
+        console.log(`  └─ [SENT]`);
+      } else {
+        console.log(`  └─ [SKIPPED]`);
       }
     } catch (err) {
-      console.error(`[ERR] Ошибка: ${err.message}`);
+      console.error(`  └─ [ERR] ${err.message}`);
     }
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`📡 Webhook: ${process.env.PUBLIC_URL || 'http://localhost:' + PORT}/webhook\n`);
+  console.log(`\n🚀 Порт ${PORT} | Webhook: ${process.env.PUBLIC_URL}/webhook\n`);
 });
