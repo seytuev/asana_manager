@@ -57,7 +57,7 @@ const sentEvents = new Map();
 function isDuplicate(key) {
   if (sentEvents.has(key)) return true;
   sentEvents.set(key, true);
-  setTimeout(() => sentEvents.delete(key), 60 * 1000);
+  setTimeout(() => sentEvents.delete(key), 5 * 1000);
   return false;
 }
 
@@ -233,6 +233,9 @@ async function formatEvent(event) {
       const match = text.match(/from "(.+?)" to "(.+?)"/);
       const from  = match ? esc(match[1]) : null;
       const to    = match ? esc(match[2]) : null;
+      // Пропускаем перемещение в "Готово" — об этом сообщит marked_complete
+      const DONE_SECTIONS = ['готово', 'done', 'completed', 'завершено', 'выполнено'];
+      if (to && DONE_SECTIONS.some(s => to.toLowerCase().includes(s))) return null;
       let msg = `<b>🔀 ${LANG === 'ru' ? 'Задача перемещена' : 'Task moved'}</b>\n`;
       msg += `📋 <b>${taskName}</b>\n`;
       if (from && to) msg += `\n${from} → <b>${to}</b>`;
