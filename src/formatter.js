@@ -101,8 +101,7 @@ function fmtDate(s) {
 function assigneeBlock(task) {
   const name = task?.assignee?.name || task?.assignee?.email || null;
   if (!name) return LANG === 'ru' ? 'не назначен' : 'unassigned';
-  const mention = getMention(name);
-  return mention ? `${esc(name)} (${mention})` : esc(name);
+  return esc(name); // упоминание @mention добавляется отдельно внизу сообщения
 }
 
 function mentionLine(task) {
@@ -226,7 +225,6 @@ async function formatEvent(event) {
     const url      = task?.permalink_url;
     const link     = url ? `\n\n<a href="${url}">🔗 ${LANG === 'ru' ? 'Открыть задачу' : 'Open task'}</a>` : '';
     const actor    = story.created_by?.name ? `\n👁 ${esc(story.created_by.name)}` : '';
-    console.log(`  [FMT] subtype=${subtype} taskName="${rawName}" task=${!!task}`);
 
     // ── Комментарий ──
     if (subtype === 'comment_added') {
@@ -284,9 +282,7 @@ async function formatEvent(event) {
       const assignedMatch = storyText.match(/assigned to (.+)$/i);
       const newAssigneeName = assignedMatch ? assignedMatch[1].trim() : null;
       const mention = newAssigneeName ? getMention(newAssigneeName) : null;
-      const newAssigneeStr = newAssigneeName
-        ? (mention ? `${esc(newAssigneeName)} (${mention})` : esc(newAssigneeName))
-        : assigneeBlock(task);
+      const newAssigneeStr = newAssigneeName ? esc(newAssigneeName) : assigneeBlock(task);
       let msg = `<b>👤 ${LANG === 'ru' ? 'Изменён исполнитель' : 'Assignee changed'}</b>\n`;
       msg += `📋 <b>${taskName}</b>\n`;
       msg += `\n👤 ${LANG === 'ru' ? 'Новый исполнитель' : 'New assignee'}: ${newAssigneeStr}`;
