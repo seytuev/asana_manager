@@ -6,6 +6,9 @@ const { formatEvent, setSendFunction } = require('./formatter');
 
 setSendFunction(sendTelegram);
 
+const { startScheduler } = require('./scheduler');
+startScheduler();
+
 const app = express();
 
 app.use(express.json({
@@ -44,22 +47,16 @@ app.post('/webhook', async (req, res) => {
   res.status(200).send();
 
   for (const event of events) {
-    // Детальный лог каждого события
-    console.log(`[EVT] action=${event.action} | type=${event.resource?.resource_type} | gid=${event.resource?.gid} | parent=${event.parent?.resource_type}:${event.parent?.gid} | field=${event.change?.field} | user=${event.user?.name || '-'}`);
-
-    // Для story — логируем subtype через API
+    // Для story — предзагружаем данные чтобы избежать 404 при повторном запросе
     if (event.resource?.resource_type === 'story') {
       const axios = require('axios');
       try {
-        const r = await axios.get(`https://app.asana.com/api/1.0/stories/${event.resource.gid}?opt_fields=resource_subtype,text,type`, {
+        const r = await axios.get(`https://app.asana.com/api/1.0/stories/${event.resource.gid}?opt_fields=resource_subtype,text,type,created_by.name,new_name,old_name,new_text_value,old_text_value,new_enum_value.name,old_enum_value.name,custom_field.name`, {
           headers: { Authorization: `Bearer ${process.env.ASANA_ACCESS_TOKEN}` }
         });
-        const s = r.data?.data;
-        // Прикрепляем данные story к событию чтобы formatter мог использовать их
-        event._storyData = s;
-        console.log(`  └─ story subtype=${s?.resource_subtype} | type=${s?.type} | text="${(s?.text||'').slice(0,80)}"`);
+        event._storyData = r.data?.data;
       } catch(e) {
-        console.log(`  └─ story fetch error: ${e.message}`);
+        // story временно недоступна, formatter попробует сам
       }
     }
 
@@ -67,12 +64,10 @@ app.post('/webhook', async (req, res) => {
       const text = await formatEvent(event);
       if (text) {
         await sendTelegram(text);
-        console.log(`  └─ [SENT]`);
-      } else {
-        console.log(`  └─ [SKIPPED]`);
+        console.log(`[OK] ${event.action} ${event.resource?.resource_type}`);
       }
     } catch (err) {
-      console.error(`  └─ [ERR] ${err.message}`);
+      console.error(`[ERR] ${err.message}`);
     }
   }
 });
